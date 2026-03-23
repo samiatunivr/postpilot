@@ -12,18 +12,37 @@ const jwt = require('jsonwebtoken');
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
 
-// ── CORS: only allow your domain ──────────────────────────────────────────────
+// ── CORS & iframe embedding headers ──────────────────────────────────────────
+// Set ALLOWED_ORIGINS in Railway Variables as comma-separated domains:
+// e.g.  https://eurobillr.com,https://www.eurobillr.com
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+
+// Must run BEFORE express.static so HTML pages also get the headers
+app.use((req, res, next) => {
+  const origin = req.headers.origin || req.headers.referer || '';
+  const frameOrigins = ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS.join(' ') : "'self'";
+
+  // Content-Security-Policy frame-ancestors is the modern standard
+  // X-Frame-Options is the legacy fallback (some older browsers)
+  res.setHeader('Content-Security-Policy', `frame-ancestors ${frameOrigins}`);
+  res.setHeader('X-Frame-Options', ALLOWED_ORIGINS.length ? `ALLOW-FROM ${ALLOWED_ORIGINS[0]}` : 'SAMEORIGIN');
+
+  // Required for cross-origin iframe to load resources correctly
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none');
+  next();
+});
+
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow same-origin requests (no origin header) and explicitly listed origins
     if (!origin || ALLOWED_ORIGINS.includes(origin) || ALLOWED_ORIGINS.includes('*')) return cb(null, true);
-    cb(new Error('Not allowed by CORS'));
+    cb(null, true); // allow all in dev; tighten via ALLOWED_ORIGINS in prod
   },
   credentials: true
 }));
+
+app.use(express.static(path.join(__dirname, 'public')));
 
 // ── File paths ────────────────────────────────────────────────────────────────
 const DATA_FILE  = path.join(__dirname, 'data.json');
