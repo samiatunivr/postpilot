@@ -938,6 +938,41 @@ function formatCd(iso){const d=new Date(iso)-new Date();if(d<=0)return'soon';con
 function formatT(iso){return new Date(iso).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});}
 
 init();setInterval(refreshDash,30000);
+
+// ── Auto token refresh ────────────────────────────────────────────────────────
+// Checks token expiry every 30 min and reloads the iframe from PHP
+// if the token is within 10 min of expiring.
+// This runs inside the iframe — it tells the PARENT window to reload
+// the iframe src with a fresh token from scheduler_token.php.
+function checkTokenExpiry(){
+  const token=getToken();
+  if(!token)return;
+  try{
+    // Decode JWT payload (middle part) — no verification needed here,
+    // just checking the exp timestamp
+    const payload=JSON.parse(atob(token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+    const expiresIn=payload.exp - Math.floor(Date.now()/1000);
+    if(expiresIn < 600){ // less than 10 minutes left
+      // Clear stored token so next load gets a fresh one
+      try{sessionStorage.removeItem('pp_token');}catch(e){}
+      try{localStorage.removeItem('pp_token');}catch(e){}
+      window.__PP_TOKEN__='';
+      // If inside an iframe, ask parent to reload with fresh token
+      if(window.self !== window.top){
+        try{
+          // Post message to parent (scheduler.php listens for this)
+          window.parent.postMessage({type:'pp_token_expired'},'*');
+        }catch(e){}
+      } else {
+        // Standalone — just reload the page
+        window.location.reload();
+      }
+    }
+  }catch(e){
+    // Token malformed — ignore
+  }
+}
+setInterval(checkTokenExpiry, 60000); // check every minute
 </script>
 </body>
 </html>
