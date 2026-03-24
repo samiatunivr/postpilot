@@ -446,7 +446,59 @@ startups" style="min-height:100px;font-size:12px"></textarea>
 <div id="toast"></div>
 
 <script>
-const API='http://localhost:3000/api';
+// ── API base URL — always relative to wherever this page is hosted ────────────
+const API = window.location.origin + '/api';
+
+// ── JWT token handling ────────────────────────────────────────────────────────
+// Priority: 1) URL param (fresh load from iframe src)
+//           2) sessionStorage (already loaded, navigating within app)
+//           3) localStorage  (fallback for browsers that block sessionStorage in iframes)
+(function() {
+  const p = new URLSearchParams(window.location.search);
+  const t = p.get('token');
+  if (t) {
+    // Fresh token from PHP — save it to both storages
+    try { sessionStorage.setItem('pp_token', t); } catch(e) {}
+    try { localStorage.setItem('pp_token', t); }   catch(e) {}
+    // Clean the token from the URL bar without reloading
+    window.history.replaceState({}, '', window.location.origin + window.location.pathname);
+  }
+})();
+
+function getToken() {
+  // Try sessionStorage first, fall back to localStorage
+  // (some browsers block sessionStorage inside cross-origin iframes)
+  try {
+    const t = sessionStorage.getItem('pp_token');
+    if (t) return t;
+  } catch(e) {}
+  try {
+    const t = localStorage.getItem('pp_token');
+    if (t) return t;
+  } catch(e) {}
+  return '';
+}
+
+// ── Authenticated fetch — attaches JWT to every API request ───────────────────
+async function apiFetch(url, options = {}) {
+  const token = getToken();
+  const headers = { ...(options.headers || {}) };
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  try {
+    const res = await fetch(url, { ...options, headers });
+    if (res.status === 401) {
+      toast('Session expired — click Refresh in the Eurobillr sidebar', 'error');
+      throw new Error('Unauthorized — token expired');
+    }
+    return res;
+  } catch(e) {
+    if (e.message.includes('Failed to fetch') || e.message.includes('NetworkError')) {
+      throw new Error('Cannot reach PostPilot at ' + window.location.origin);
+    }
+    throw e;
+  }
+}
+
 let slotsData=[],AI_PROVIDERS={},PLATFORMS={};
 let newSlotPlats=['twitter','facebook'],newImgMode='none',newAIProvider='anthropic',newAIModel='';
 let previewAI='anthropic',previewModel='',previews={};
@@ -454,7 +506,10 @@ let previewAI='anthropic',previewModel='',previews={};
 const PLAT_COLORS={twitter:'var(--blue)',facebook:'var(--fb)',instagram:'var(--ig)',linkedin:'var(--li)',pinterest:'var(--pin)',tiktok:'var(--tt)',gbp:'var(--gbp)',reddit:'#ff4500'};
 
 async function init(){
-  [AI_PROVIDERS,PLATFORMS]=await Promise.all([fetch(API+'/providers').then(r=>r.json()),fetch(API+'/platforms').then(r=>r.json())]);
+  [AI_PROVIDERS,PLATFORMS]=await Promise.all([
+    apiFetch(API+'/providers').then(r=>r.json()),
+    apiFetch(API+'/platforms').then(r=>r.json())
+  ]);
   buildPreviewAIChips();refreshDash();
 }
 
@@ -476,7 +531,7 @@ function toast(msg,type='info'){const t=document.getElementById('toast');t.textC
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 async function refreshDash(){
   try{
-    const[st,logs]=await Promise.all([fetch(API+'/status').then(r=>r.json()),fetch(API+'/logs').then(r=>r.json())]);
+    const[st,logs]=await Promise.all([apiFetch(API+'/status').then(r=>r.json()),apiFetch(API+'/logs').then(r=>r.json())]);
     const sent=logs.filter(l=>l.status==='success'&&Object.keys(PLATFORMS).includes(l.platform));
     document.getElementById('s-slots').textContent=st.activeSlots||0;
     document.getElementById('s-sent').textContent=sent.length;
@@ -497,7 +552,7 @@ async function refreshDash(){
       if(lg.imageUrl){lpImg.src=lg.imageUrl;lpImg.className='lpi show';}else lpImg.className='lpi';
     }
     renderSetup(st);
-  }catch(e){toast('Cannot reach server on port 3000','error');}
+  }catch(e){toast('Cannot reach PostPilot server: '+e.message,'error');console.error('refreshDash error:',e);}
 }
 
 function renderSetup(s){
@@ -517,7 +572,7 @@ async function runNow(imageMode='none'){
   const labels={none:'▶ Run Now',uploaded:'📷 + Uploaded',ai:'🤖 + AI Image'};
   const btn=document.getElementById(ids[imageMode]);btn.disabled=true;btn.textContent='⏳…';
   try{
-    await fetch(API+'/run-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageMode,platforms:Object.keys(PLATFORMS),aiProvider:newAIProvider,aiModel:newAIModel})});
+    await apiFetch(API+'/run-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageMode,platforms:Object.keys(PLATFORMS),aiProvider:newAIProvider,aiModel:newAIModel})});
     const d=imageMode==='ai'?25000:5000;
     toast('Pipeline started — check Activity Log','success');
     setTimeout(()=>{loadLogs();refreshDash();},d);setTimeout(()=>{btn.disabled=false;btn.textContent=labels[imageMode];},d);
@@ -570,14 +625,14 @@ async function addSlot(){
   if(slotsData.find(s=>s.time===time))return toast(`Slot at ${time} already exists`,'error');
   if(!newSlotPlats.length)return toast('Select at least one platform','error');
   const redditLink=document.getElementById('new-reddit-link')?.value.trim()||'';
-  const slot=await fetch(API+'/slots',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({time,label,imageMode:newImgMode,platforms:newSlotPlats,aiProvider:newAIProvider,aiModel,platformAI:{},redditLink})}).then(r=>r.json());
+  const slot=await apiFetch(API+'/slots',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({time,label,imageMode:newImgMode,platforms:newSlotPlats,aiProvider:newAIProvider,aiModel,platformAI:{},redditLink})}).then(r=>r.json());
   const rlEl=document.getElementById('new-reddit-link');if(rlEl)rlEl.value='';
   slotsData.push(slot);document.getElementById('nsl').value='';document.getElementById('add-form').classList.add('hidden');
   renderSlots(slotsData);toast('Slot added ✓','success');refreshDash();
 }
 
 // ── Slots render ──────────────────────────────────────────────────────────────
-async function loadSlots(){slotsData=await fetch(API+'/slots').then(r=>r.json());renderSlots(slotsData);}
+async function loadSlots(){slotsData=await apiFetch(API+'/slots').then(r=>r.json());renderSlots(slotsData);}
 
 function renderSlots(slots){
   const cont=document.getElementById('slots-cont'),sum=document.getElementById('sl-sum');
@@ -742,22 +797,22 @@ async function setSlotRedditLink(id,redditLink){
 }
 async function delSlot(id){
   const slot=slotsData.find(s=>s.id===id);if(!slot||!confirm(`Delete "${slot.label}"?`))return;
-  await fetch(`${API}/slots/${id}`,{method:'DELETE'});slotsData=slotsData.filter(s=>s.id!==id);renderSlots(slotsData);refreshDash();toast('Deleted','info');
+  await apiFetch(`${API}/slots/${id}`,{method:'DELETE'});slotsData=slotsData.filter(s=>s.id!==id);renderSlots(slotsData);refreshDash();toast('Deleted','info');
 }
-async function patch(id,body){return fetch(`${API}/slots/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}
+async function patch(id,body){return apiFetch(`${API}/slots/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}
 function nextRunLocal(t){const[h,m]=t.split(':').map(Number);const n=new Date();n.setUTCHours(h,m,0,0);if(n<=new Date())n.setUTCDate(n.getUTCDate()+1);return n.toLocaleString('en-US',{weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});}
 
 // ── Images ────────────────────────────────────────────────────────────────────
-async function loadImage(){const r=await fetch(API+'/upload-image').then(r=>r.json());renderImg(r.image);}
+async function loadImage(){const r=await apiFetch(API+'/upload-image').then(r=>r.json());renderImg(r.image);}
 function renderImg(img){const p=document.getElementById('uprev'),n=document.getElementById('up-none'),f=document.getElementById('full-prev');if(!img){p.className='uprev';n.style.display='block';f.style.display='none';return;}p.className='uprev show';n.style.display='none';document.getElementById('uth').src=img.url;document.getElementById('unn').textContent=img.originalName;document.getElementById('um').textContent=`${(img.size/1024).toFixed(0)} KB · ${formatT(img.uploadedAt)}`;document.getElementById('fp-img').src=img.url;f.style.display='block';}
-async function handleFile(file){if(!file)return;const prog=document.getElementById('up-prog'),bar=document.getElementById('up-bar'),st=document.getElementById('up-st');prog.style.display='block';bar.style.width='0%';st.textContent='Uploading…';let pct=0;const iv=setInterval(()=>{pct=Math.min(pct+5,85);bar.style.width=pct+'%';},120);try{const form=new FormData();form.append('image',file);const r=await fetch(API+'/upload-image',{method:'POST',body:form}).then(r=>r.json());clearInterval(iv);bar.style.width='100%';st.textContent='✓ Done';if(r.error)throw new Error(r.error);renderImg(r.image);toast(`Uploaded ✓`,'success');setTimeout(()=>prog.style.display='none',2000);}catch(e){clearInterval(iv);bar.style.background='var(--red)';st.textContent=`✗ ${e.message}`;toast(e.message,'error');}}
-async function delImg(){if(!confirm('Remove?'))return;await fetch(API+'/upload-image',{method:'DELETE'});renderImg(null);toast('Removed','info');}
+async function handleFile(file){if(!file)return;const prog=document.getElementById('up-prog'),bar=document.getElementById('up-bar'),st=document.getElementById('up-st');prog.style.display='block';bar.style.width='0%';st.textContent='Uploading…';let pct=0;const iv=setInterval(()=>{pct=Math.min(pct+5,85);bar.style.width=pct+'%';},120);try{const form=new FormData();form.append('image',file);const r=await apiFetch(API+'/upload-image',{method:'POST',body:form}).then(r=>r.json());clearInterval(iv);bar.style.width='100%';st.textContent='✓ Done';if(r.error)throw new Error(r.error);renderImg(r.image);toast(`Uploaded ✓`,'success');setTimeout(()=>prog.style.display='none',2000);}catch(e){clearInterval(iv);bar.style.background='var(--red)';st.textContent=`✗ ${e.message}`;toast(e.message,'error');}}
+async function delImg(){if(!confirm('Remove?'))return;await apiFetch(API+'/upload-image',{method:'DELETE'});renderImg(null);toast('Removed','info');}
 document.addEventListener('DOMContentLoaded',()=>{const dz=document.getElementById('dz');if(!dz)return;dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('over');});dz.addEventListener('dragleave',()=>dz.classList.remove('over'));dz.addEventListener('drop',e=>{e.preventDefault();dz.classList.remove('over');const f=e.dataTransfer.files[0];if(f)handleFile(f);});});
 
 // ── Instructions & Preview ────────────────────────────────────────────────────
-async function loadInstr(){const r=await fetch(API+'/instruction').then(r=>r.json());document.getElementById('instr').value=r.instruction||'';updateCC();}
+async function loadInstr(){const r=await apiFetch(API+'/instruction').then(r=>r.json());document.getElementById('instr').value=r.instruction||'';updateCC();}
 function updateCC(){document.getElementById('cc').textContent=`${document.getElementById('instr').value.length} characters`;}
-async function saveInstr(){const instruction=document.getElementById('instr').value.trim();if(!instruction)return toast('Write instructions first','error');await fetch(API+'/instruction',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({instruction})});toast('Saved ✓','success');}
+async function saveInstr(){const instruction=document.getElementById('instr').value.trim();if(!instruction)return toast('Write instructions first','error');await apiFetch(API+'/instruction',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({instruction})});toast('Saved ✓','success');}
 
 function buildPreviewAIChips(){
   const el=document.getElementById('preview-ai-chips');if(!el)return;
@@ -779,7 +834,7 @@ async function switchTab(platform){document.querySelectorAll('.ptab').forEach(t=
 async function fetchPreview(instruction,platform){
   const box=document.getElementById('pbox');const prov=AI_PROVIDERS[previewAI]||{icon:'🤖',name:'AI'};
   box.textContent=`${prov.icon} Writing for ${PLATFORMS[platform]?.name}…`;box.className='pbox empty';
-  try{const r=await fetch(API+'/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({instruction,platform,aiProvider:previewAI,aiModel:previewModel||null})}).then(r=>r.json());if(r.error)throw new Error(r.error);previews[platform]=r.content;showPreview(r.content,platform);}
+  try{const r=await apiFetch(API+'/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({instruction,platform,aiProvider:previewAI,aiModel:previewModel||null})}).then(r=>r.json());if(r.error)throw new Error(r.error);previews[platform]=r.content;showPreview(r.content,platform);}
   catch(e){box.textContent=`Error: ${e.message}`;box.className='pbox empty';toast(e.message,'error');}
 }
 function showPreview(content,platform){const box=document.getElementById('pbox');box.textContent=content;box.className='pbox';document.getElementById('pch').textContent=`${content.length} chars`;const max={twitter:280,facebook:63206,instagram:2200,linkedin:3000,pinterest:500,tiktok:2200,gbp:1500}[platform]||280;document.getElementById('plim').textContent=content.length>max?`⚠ Over ${max}`:`✓ Within ${max}`;}
@@ -788,15 +843,15 @@ async function previewAIImg(){
   const instruction=document.getElementById('instr').value.trim();if(!instruction)return toast('Write instructions first','error');
   const box=document.getElementById('pbox');box.textContent='🎨 Generating AI image (~15s)…';box.className='pbox empty';
   document.getElementById('pimg').className='pimg';document.getElementById('pprompt').style.display='none';
-  try{const r=await fetch(API+'/preview-image',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({instruction})}).then(r=>r.json());if(r.error)throw new Error(r.error);box.textContent='✓ Image generated';box.className='pbox';const img=document.getElementById('pimg');img.src=r.imageUrl;img.className='pimg show';const pp=document.getElementById('pprompt');pp.textContent=`Prompt: "${r.imagePrompt}"`;pp.style.display='block';}
+  try{const r=await apiFetch(API+'/preview-image',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({instruction})}).then(r=>r.json());if(r.error)throw new Error(r.error);box.textContent='✓ Image generated';box.className='pbox';const img=document.getElementById('pimg');img.src=r.imageUrl;img.className='pimg show';const pp=document.getElementById('pprompt');pp.textContent=`Prompt: "${r.imagePrompt}"`;pp.style.display='block';}
   catch(e){box.textContent=`Error: ${e.message}`;box.className='pbox empty';toast(e.message,'error');}
 }
 
 // ── Credentials ───────────────────────────────────────────────────────────────
 async function loadCreds(){
   const[cfg,st]=await Promise.all([
-    fetch(API+'/config').then(r=>r.json()),
-    fetch(API+'/status').then(r=>r.json())
+    apiFetch(API+'/config').then(r=>r.json()),
+    apiFetch(API+'/status').then(r=>r.json())
   ]);
   const masked=cfg.values||cfg;
   const encEnabled=cfg.encryptionEnabled??false;
@@ -826,7 +881,7 @@ async function saveCreds(){
   const keys=['anthropicApiKey','openaiApiKey','geminiApiKey','groqApiKey','deepseekApiKey','qwenApiKey','falApiKey','twitterApiKey','twitterApiSecret','twitterAccessToken','twitterAccessSecret','facebookPageId','facebookAccessToken','instagramAccountId','instagramAccessToken','linkedinAccessToken','pinterestAccessToken','pinterestBoardId','tiktokAccessToken','gbpAccountId','gbpLocationId','gbpAccessToken','gbpWebsiteUrl','redditClientId','redditClientSecret','redditRefreshToken','redditUsername'];
   const payload={};keys.forEach(k=>{const v=document.getElementById(k)?.value.trim();if(v)payload[k]=v;});
   if(!Object.keys(payload).length)return toast('No new values','info');
-  const r=await fetch(API+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(r=>r.json());
+  const r=await apiFetch(API+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(r=>r.json());
   keys.forEach(k=>{const el=document.getElementById(k);if(el)el.value='';});
   toast(r.encrypted?'Saved & encrypted \u2713':'Saved \u2713 (encryption not active)','success');
   loadCreds();
@@ -835,7 +890,7 @@ async function migrateEncryption(){
   const btn=document.getElementById('migrate-btn');
   btn.disabled=true;btn.textContent='\u23F3 Encrypting...';
   try{
-    const r=await fetch(API+'/migrate-encryption',{method:'POST'}).then(r=>r.json());
+    const r=await apiFetch(API+'/migrate-encryption',{method:'POST'}).then(r=>r.json());
     if(r.error)throw new Error(r.error);
     toast('Encrypted '+r.migrated+' key(s)','success');
     loadCreds();
@@ -846,7 +901,7 @@ async function migrateEncryption(){
 // ── Subreddits ───────────────────────────────────────────────────────────────
 async function loadSubreddits(){
   try{
-    const r=await fetch(API+'/subreddits').then(r=>r.json());
+    const r=await apiFetch(API+'/subreddits').then(r=>r.json());
     const el=document.getElementById('subreddit-list');
     if(el)el.value=(r.subreddits||[]).join('\n');
     const cnt=document.getElementById('subreddit-count');
@@ -857,7 +912,7 @@ async function saveSubreddits(){
   const el=document.getElementById('subreddit-list');
   if(!el)return;
   const subreddits=el.value.split('\n').map(s=>s.trim().replace(/^r\//,'')).filter(Boolean);
-  const r=await fetch(API+'/subreddits',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subreddits})}).then(r=>r.json());
+  const r=await apiFetch(API+'/subreddits',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subreddits})}).then(r=>r.json());
   const cnt=document.getElementById('subreddit-count');
   if(cnt)cnt.textContent=r.subreddits.length+' saved';
   toast('Subreddits saved ✓','success');
@@ -865,7 +920,7 @@ async function saveSubreddits(){
 
 // ── Logs ──────────────────────────────────────────────────────────────────────
 async function loadLogs(){
-  const logs=await fetch(API+'/logs').then(r=>r.json());const list=document.getElementById('log-list');
+  const logs=await apiFetch(API+'/logs').then(r=>r.json());const list=document.getElementById('log-list');
   if(!logs.length){list.innerHTML='<div style="text-align:center;padding:36px;color:var(--muted);font-size:12px">No activity yet.</div>';return;}
   const pIcon={twitter:'𝕏',facebook:'𝑓',instagram:'📸',linkedin:'🔗',pinterest:'📌',tiktok:'🎵',gbp:'🔍',ai:'✦',system:'⬡'};
   const pColor={twitter:'var(--blue)',facebook:'var(--fb)',instagram:'var(--ig)',linkedin:'var(--li)',pinterest:'var(--pin)',tiktok:'var(--tt)',gbp:'var(--gbp)',ai:'var(--green)',system:'var(--muted)'};
