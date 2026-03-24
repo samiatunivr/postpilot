@@ -282,11 +282,35 @@
         <img class="lpi" id="lp-img" alt=""/>
       </div>
     </div>
-    <div class="br-row">
-      <button class="btn bg" onclick="runNow('none')" id="btn-run">▶ Run Now</button>
-      <button class="btn bor" onclick="runNow('uploaded')" id="btn-up">📷 + Uploaded</button>
-      <button class="btn bpur" onclick="runNow('ai')" id="btn-ai">🤖 + AI Image</button>
-      <button class="btn bo" onclick="refreshDash()">↻ Refresh</button>
+    <!-- Manual run controls -->
+    <div style="background:var(--sf2);border:1px solid var(--bd2);border-radius:11px;padding:13px 15px;margin-top:4px">
+      <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">Manual Run</div>
+
+      <!-- AI picker for manual run -->
+      <div style="margin-bottom:10px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:6px">AI Provider</div>
+        <div class="ai-chips" id="dash-ai-chips"></div>
+      </div>
+
+      <!-- Model picker -->
+      <div style="margin-bottom:10px" id="dash-model-wrap">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Model</div>
+        <div class="msel"><select id="dash-model-sel" style="font-size:12px"></select></div>
+      </div>
+
+      <!-- Platform toggles for manual run -->
+      <div style="margin-bottom:10px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Platforms</div>
+        <div class="pg" id="dash-plat-chips"></div>
+      </div>
+
+      <!-- Run buttons -->
+      <div class="br-row" style="margin-top:4px">
+        <button class="btn bg" onclick="runNow('none')" id="btn-run">▶ Run Now</button>
+        <button class="btn bor" onclick="runNow('uploaded')" id="btn-up">📷 + Uploaded</button>
+        <button class="btn bpur" onclick="runNow('ai')" id="btn-ai">🤖 + AI Image</button>
+        <button class="btn bo" onclick="refreshDash()">↻ Refresh</button>
+      </div>
     </div>
   </section>
 
@@ -458,60 +482,47 @@ startups" style="min-height:100px;font-size:12px"></textarea>
 <div id="toast"></div>
 
 <script>
-// ── API base URL — always relative to wherever this page is hosted ────────────
+// ── API base URL ─────────────────────────────────────────────────────────────
 const API = window.location.origin + '/api';
 
-// ── JWT token handling ────────────────────────────────────────────────────────
-// Priority order — whichever is available first wins:
-// 1. window.__PP_TOKEN__  injected by Express when serving index.html (most reliable)
-// 2. URL ?token= param    fallback if served as static file
-// 3. sessionStorage       survives tab navigation
-// 4. localStorage         survives page reloads (may be blocked in iframes)
+// ── Secret key auth — no JWT, no expiry ──────────────────────────────────────
+// Server injects window.__PP_SECRET__ when serving index.html.
+// Also stored in cookie (set by server) as backup.
+// Sent as X-PP-Secret header on every API call.
 (function() {
-  // Get token from any available source
-  const fromWindow  = (typeof window.__PP_TOKEN__ !== 'undefined') ? window.__PP_TOKEN__ : '';
-  const fromUrl     = new URLSearchParams(window.location.search).get('token') || '';
-  const fromSession = (() => { try { return sessionStorage.getItem('pp_token') || ''; } catch(e) { return ''; } })();
-  const fromLocal   = (() => { try { return localStorage.getItem('pp_token')   || ''; } catch(e) { return ''; } })();
+  // Get secret from injected variable, URL param, or cookie
+  const fromWindow = (typeof window.__PP_SECRET__ !== 'undefined') ? window.__PP_SECRET__ : '';
+  const fromUrl    = new URLSearchParams(window.location.search).get('secret') || '';
+  const fromCookie = document.cookie.split(';').map(c=>c.trim()).find(c=>c.startsWith('pp_secret='))?.split('=')[1] || '';
 
-  const token = fromWindow || fromUrl || fromSession || fromLocal;
+  const secret = fromWindow || fromUrl || fromCookie;
+  window.__PP_SECRET__ = secret;
 
-  if (token) {
-    // Persist to both storages as backup for future navigations
-    try { sessionStorage.setItem('pp_token', token); } catch(e) {}
-    try { localStorage.setItem('pp_token', token);   } catch(e) {}
-    // Clean token from URL bar (security — don't leave it in browser history)
-    if (fromUrl) window.history.replaceState({}, '', window.location.origin + window.location.pathname);
-  }
-
-  // Make token globally accessible
-  window.__PP_TOKEN__ = token;
+  // Clean secret from URL bar
+  if (fromUrl) window.history.replaceState({}, '', window.location.origin + window.location.pathname);
 })();
 
-function getToken() {
-  // window.__PP_TOKEN__ is always set by the IIFE above — fastest path
-  if (window.__PP_TOKEN__) return window.__PP_TOKEN__;
-  // Fallbacks in case of edge cases
-  try { const t = sessionStorage.getItem('pp_token'); if (t) return t; } catch(e) {}
-  try { const t = localStorage.getItem('pp_token');   if (t) return t; } catch(e) {}
-  return '';
+function getSecret() {
+  if (window.__PP_SECRET__) return window.__PP_SECRET__;
+  // Try cookie as fallback
+  return document.cookie.split(';').map(c=>c.trim()).find(c=>c.startsWith('pp_secret='))?.split('=')[1] || '';
 }
 
-// ── Authenticated fetch — attaches JWT to every API request ───────────────────
+// ── Authenticated fetch ───────────────────────────────────────────────────────
 async function apiFetch(url, options = {}) {
-  const token = getToken();
+  const secret = getSecret();
   const headers = { ...(options.headers || {}) };
-  if (token) headers['Authorization'] = 'Bearer ' + token;
+  if (secret) headers['X-PP-Secret'] = secret;
   try {
     const res = await fetch(url, { ...options, headers });
     if (res.status === 401) {
-      toast('Session expired — click Refresh in the Eurobillr sidebar', 'error');
-      throw new Error('Unauthorized — token expired');
+      toast('Auth error — please reload the page', 'error');
+      throw new Error('Unauthorized');
     }
     return res;
   } catch(e) {
     if (e.message.includes('Failed to fetch') || e.message.includes('NetworkError')) {
-      throw new Error('Cannot reach PostPilot at ' + window.location.origin);
+      throw new Error('Cannot reach PostPilot server');
     }
     throw e;
   }
@@ -520,6 +531,8 @@ async function apiFetch(url, options = {}) {
 let slotsData=[],AI_PROVIDERS={},PLATFORMS={};
 let newSlotPlats=['twitter','facebook'],newImgMode='none',newAIProvider='anthropic',newAIModel='';
 let previewAI='anthropic',previewModel='',previews={};
+// Dashboard manual run state — separate from slot form state
+let dashAIProvider='anthropic',dashAIModel='',dashPlatforms=[];
 
 const PLAT_COLORS={twitter:'var(--blue)',facebook:'var(--fb)',instagram:'var(--ig)',linkedin:'var(--li)',pinterest:'var(--pin)',tiktok:'var(--tt)',gbp:'var(--gbp)',reddit:'#ff4500'};
 
@@ -528,7 +541,42 @@ async function init(){
     apiFetch(API+'/providers').then(r=>r.json()),
     apiFetch(API+'/platforms').then(r=>r.json())
   ]);
-  buildPreviewAIChips();refreshDash();
+  // Set default dashboard platforms to all platforms
+  dashPlatforms = Object.keys(PLATFORMS);
+  dashAIProvider = 'anthropic';
+  dashAIModel = AI_PROVIDERS['anthropic']?.models[0]?.id || '';
+  buildDashAIChips();
+  buildDashPlatChips();
+  buildPreviewAIChips();
+  refreshDash();
+}
+
+function buildDashAIChips(){
+  const el=document.getElementById('dash-ai-chips');if(!el)return;
+  el.innerHTML=Object.entries(AI_PROVIDERS).map(([k,v])=>`<div class="ai-chip ${dashAIProvider===k?'sel sel-'+k:''}" onclick="setDashAI('${k}')">${v.icon} ${v.name}</div>`).join('');
+  // update model list
+  const sel=document.getElementById('dash-model-sel');if(!sel)return;
+  const models=AI_PROVIDERS[dashAIProvider]?.models||[];
+  sel.innerHTML=models.map(m=>`<option value="${m.id}">${m.label}${m.badge?' — '+m.badge:''}</option>`).join('');
+  dashAIModel=models[0]?.id||'';
+  sel.onchange=()=>dashAIModel=sel.value;
+}
+
+function setDashAI(k){
+  dashAIProvider=k;
+  dashAIModel=AI_PROVIDERS[k]?.models[0]?.id||'';
+  buildDashAIChips();
+}
+
+function buildDashPlatChips(){
+  const el=document.getElementById('dash-plat-chips');if(!el)return;
+  el.innerHTML=Object.entries(PLATFORMS).map(([k,v])=>`<div class="pp ${dashPlatforms.includes(k)?'on-'+k:''}" onclick="toggleDashPlat('${k}',this)">${v.icon} ${v.name}</div>`).join('');
+}
+
+function toggleDashPlat(k,el){
+  if(dashPlatforms.includes(k))dashPlatforms=dashPlatforms.filter(p=>p!==k);
+  else dashPlatforms.push(k);
+  el.className=`pp ${dashPlatforms.includes(k)?'on-'+k:''}`;
 }
 
 // ── Nav ───────────────────────────────────────────────────────────────────────
@@ -589,12 +637,22 @@ async function runNow(imageMode='none'){
   const ids={none:'btn-run',uploaded:'btn-up',ai:'btn-ai'};
   const labels={none:'▶ Run Now',uploaded:'📷 + Uploaded',ai:'🤖 + AI Image'};
   const btn=document.getElementById(ids[imageMode]);btn.disabled=true;btn.textContent='⏳…';
+
+  // Use dashboard picker values — not the slot form values
+  const provider = dashAIProvider || 'anthropic';
+  const model    = document.getElementById('dash-model-sel')?.value || dashAIModel || '';
+  const platforms = dashPlatforms.length ? dashPlatforms : Object.keys(PLATFORMS);
+
+  const prov = AI_PROVIDERS[provider]||{icon:'🤖',name:provider};
+  toast(`${prov.icon} Running with ${prov.name} on ${platforms.length} platform(s)…`,'info');
+
   try{
-    await apiFetch(API+'/run-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageMode,platforms:Object.keys(PLATFORMS),aiProvider:newAIProvider,aiModel:newAIModel})});
+    await apiFetch(API+'/run-now',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({imageMode, platforms, aiProvider:provider, aiModel:model})});
     const d=imageMode==='ai'?25000:5000;
-    toast('Pipeline started — check Activity Log','success');
-    setTimeout(()=>{loadLogs();refreshDash();},d);setTimeout(()=>{btn.disabled=false;btn.textContent=labels[imageMode];},d);
-  }catch(e){toast('Failed','error');btn.disabled=false;btn.textContent=labels[imageMode];}
+    setTimeout(()=>{loadLogs();refreshDash();},d);
+    setTimeout(()=>{btn.disabled=false;btn.textContent=labels[imageMode];},d);
+  }catch(e){toast('Failed: '+e.message,'error');btn.disabled=false;btn.textContent=labels[imageMode];}
 }
 
 // ── AI chip helpers ───────────────────────────────────────────────────────────
@@ -983,40 +1041,6 @@ function formatT(iso){return new Date(iso).toLocaleString('en-US',{month:'short'
 
 init();setInterval(refreshDash,30000);
 
-// ── Auto token refresh ────────────────────────────────────────────────────────
-// Checks token expiry every 30 min and reloads the iframe from PHP
-// if the token is within 10 min of expiring.
-// This runs inside the iframe — it tells the PARENT window to reload
-// the iframe src with a fresh token from scheduler_token.php.
-function checkTokenExpiry(){
-  const token=getToken();
-  if(!token)return;
-  try{
-    // Decode JWT payload (middle part) — no verification needed here,
-    // just checking the exp timestamp
-    const payload=JSON.parse(atob(token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
-    const expiresIn=payload.exp - Math.floor(Date.now()/1000);
-    if(expiresIn < 600){ // less than 10 minutes left
-      // Clear stored token so next load gets a fresh one
-      try{sessionStorage.removeItem('pp_token');}catch(e){}
-      try{localStorage.removeItem('pp_token');}catch(e){}
-      window.__PP_TOKEN__='';
-      // If inside an iframe, ask parent to reload with fresh token
-      if(window.self !== window.top){
-        try{
-          // Post message to parent (scheduler.php listens for this)
-          window.parent.postMessage({type:'pp_token_expired'},'*');
-        }catch(e){}
-      } else {
-        // Standalone — just reload the page
-        window.location.reload();
-      }
-    }
-  }catch(e){
-    // Token malformed — ignore
-  }
-}
-setInterval(checkTokenExpiry, 60000); // check every minute
 </script>
 </body>
 </html>
