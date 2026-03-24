@@ -9,9 +9,11 @@ const path = require('path');
 const FormData = require('form-data');
 const multer = require('multer');
 const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
 
 const app = express();
 app.use(express.json());
+app.use(cookieParser());
 
 // ── CORS & iframe embedding headers ──────────────────────────────────────────
 // Set ALLOWED_ORIGINS in Railway Variables as comma-separated domains:
@@ -42,20 +44,30 @@ app.use(cors({
   credentials: true
 }));
 
-// ── Serve index.html dynamically — inject token directly into the page ──────
-// This avoids all browser storage issues with cross-origin iframes.
-// The token arrives in ?token=, Express reads it, embeds it as a JS variable.
-// The static middleware still serves other assets (CSS, JS, images).
+// ── Serve index.html — set secret cookie on first load ───────────────────────
+// When PHP sends ?secret=xxx in the iframe URL, we set it as a cookie.
+// Cookie persists for 12 hours — no re-auth needed during a working day.
+// SameSite=None + Secure required for cross-origin iframe cookies.
 app.get('/', (req, res) => {
-  const token = req.query.token || '';
+  const secret = req.query.secret || '';
   const htmlPath = path.join(__dirname, 'public', 'index.html');
   if (!fs.existsSync(htmlPath)) return res.status(404).send('index.html not found');
 
-  let html = fs.readFileSync(htmlPath, 'utf8');
+  // Set cookie if secret provided and matches
+  if (secret && process.env.UI_SECRET && secret === process.env.UI_SECRET) {
+    res.cookie('pp_secret', secret, {
+      maxAge:   12 * 60 * 60 * 1000, // 12 hours
+      httpOnly: false,  // JS needs to read it to send as header
+      secure:   true,   // HTTPS only
+      sameSite: 'None', // required for cross-origin iframes
+      path:     '/',
+    });
+  }
 
-  // Inject the token as a global JS variable right before </head>
-  // This runs before any script on the page — guaranteed available immediately
-  const injection = `<script>window.__PP_TOKEN__ = ${JSON.stringify(token)};</script>`;
+  // Inject secret as JS variable so it's available immediately
+  // even before the cookie is readable
+  let html = fs.readFileSync(htmlPath, 'utf8');
+  const injection = `<script>window.__PP_SECRET__ = ${JSON.stringify(secret || '')};</script>`;
   html = html.replace('</head>', injection + '</head>');
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -95,34 +107,38 @@ const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 },
 });
 
 // ── Auth middleware ───────────────────────────────────────────────────────────
+// Simple IP + secret key approach — no JWT, no expiry, no session issues.
+//
+// Set UI_SECRET in Railway Variables to any random string.
+// postpilot_auth.php passes it as ?secret= in the iframe URL.
+// The browser stores it in a cookie (httpOnly=false so JS can read it).
+// Every API call sends it as X-PP-Secret header.
+// No expiry — works forever until you change the secret.
+//
+// If UI_SECRET is not set → open access (local dev mode).
+
 function requireAuth(req, res, next) {
-  // Skip auth entirely if APP_KEY not set — local dev mode
-  if (!process.env.APP_KEY) return next();
+  // No secret set = dev mode, allow all
+  if (!process.env.UI_SECRET) return next();
 
-  // Accept token from (in priority order):
-  // 1. Authorization: Bearer <token>  header  (JS apiFetch sends this)
-  // 2. ?token= query param            (initial iframe src load)
-  // 3. x-postpilot-token header       (fallback)
-  const token =
+  // Accept the secret from ANY of these sources so nothing ever expires:
+  // 1. x-pp-secret header        (set by JS apiFetch)
+  // 2. Authorization: Bearer XXX (also set by JS apiFetch fallback)
+  // 3. ?secret= query param      (iframe src from postpilot_auth.php)
+  // 4. ?token= query param       (legacy fallback)
+  // 5. Cookie                    (set on first load)
+  const secret =
+    req.headers['x-pp-secret'] ||
     req.headers['authorization']?.replace('Bearer ', '').trim() ||
-    req.query.token ||
-    req.headers['x-postpilot-token'];
+    req.query.secret ||
+    req.query.token  ||
+    req.cookies?.pp_secret;
 
-  if (!token) {
-    return res.status(401).json({ error: 'Unauthorized — no token provided' });
-  }
-
-  try {
-    const decoded = jwt.verify(token, process.env.APP_KEY, { algorithms: ['HS256'] });
-    req.user = decoded;
-    next();
-  } catch (e) {
-    return res.status(401).json({ error: 'Token invalid or expired — please refresh the page' });
-  }
+  if (secret === process.env.UI_SECRET) return next();
+  return res.status(401).json({ error: 'Unauthorized — secret mismatch' });
 }
 
-// Public routes: health check, cron tick (protected by CRON_SECRET instead)
-// All /api/* routes require auth EXCEPT /api/health and /api/cron-tick
+// Public routes (no auth needed)
 app.use('/api', (req, res, next) => {
   if (req.path === '/health' || req.path === '/cron-tick') return next();
   requireAuth(req, res, next);
