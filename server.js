@@ -42,6 +42,27 @@ app.use(cors({
   credentials: true
 }));
 
+// ── Serve index.html dynamically — inject token directly into the page ──────
+// This avoids all browser storage issues with cross-origin iframes.
+// The token arrives in ?token=, Express reads it, embeds it as a JS variable.
+// The static middleware still serves other assets (CSS, JS, images).
+app.get('/', (req, res) => {
+  const token = req.query.token || '';
+  const htmlPath = path.join(__dirname, 'public', 'index.html');
+  if (!fs.existsSync(htmlPath)) return res.status(404).send('index.html not found');
+
+  let html = fs.readFileSync(htmlPath, 'utf8');
+
+  // Inject the token as a global JS variable right before </head>
+  // This runs before any script on the page — guaranteed available immediately
+  const injection = `<script>window.__PP_TOKEN__ = ${JSON.stringify(token)};</script>`;
+  html = html.replace('</head>', injection + '</head>');
+
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+});
+
+// Serve all other static assets (fonts, images, etc.) normally
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── File paths ────────────────────────────────────────────────────────────────
