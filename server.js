@@ -59,20 +59,29 @@ const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 },
 });
 
 // ── Auth middleware ───────────────────────────────────────────────────────────
-// Verifies JWT signed by Laravel using APP_KEY (shared secret)
 function requireAuth(req, res, next) {
-  // Skip auth if APP_KEY not set (local dev)
+  // Skip auth entirely if APP_KEY not set — local dev mode
   if (!process.env.APP_KEY) return next();
 
-  const token = req.headers['authorization']?.replace('Bearer ', '') || req.query.token;
-  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+  // Accept token from (in priority order):
+  // 1. Authorization: Bearer <token>  header  (JS apiFetch sends this)
+  // 2. ?token= query param            (initial iframe src load)
+  // 3. x-postpilot-token header       (fallback)
+  const token =
+    req.headers['authorization']?.replace('Bearer ', '').trim() ||
+    req.query.token ||
+    req.headers['x-postpilot-token'];
+
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized — no token provided' });
+  }
 
   try {
     const decoded = jwt.verify(token, process.env.APP_KEY, { algorithms: ['HS256'] });
     req.user = decoded;
     next();
   } catch (e) {
-    return res.status(401).json({ error: 'Invalid or expired token' });
+    return res.status(401).json({ error: 'Token invalid or expired — please refresh the page' });
   }
 }
 
