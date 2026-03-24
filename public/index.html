@@ -450,32 +450,38 @@ startups" style="min-height:100px;font-size:12px"></textarea>
 const API = window.location.origin + '/api';
 
 // ── JWT token handling ────────────────────────────────────────────────────────
-// Priority: 1) URL param (fresh load from iframe src)
-//           2) sessionStorage (already loaded, navigating within app)
-//           3) localStorage  (fallback for browsers that block sessionStorage in iframes)
+// Priority order — whichever is available first wins:
+// 1. window.__PP_TOKEN__  injected by Express when serving index.html (most reliable)
+// 2. URL ?token= param    fallback if served as static file
+// 3. sessionStorage       survives tab navigation
+// 4. localStorage         survives page reloads (may be blocked in iframes)
 (function() {
-  const p = new URLSearchParams(window.location.search);
-  const t = p.get('token');
-  if (t) {
-    // Fresh token from PHP — save it to both storages
-    try { sessionStorage.setItem('pp_token', t); } catch(e) {}
-    try { localStorage.setItem('pp_token', t); }   catch(e) {}
-    // Clean the token from the URL bar without reloading
-    window.history.replaceState({}, '', window.location.origin + window.location.pathname);
+  // Get token from any available source
+  const fromWindow  = (typeof window.__PP_TOKEN__ !== 'undefined') ? window.__PP_TOKEN__ : '';
+  const fromUrl     = new URLSearchParams(window.location.search).get('token') || '';
+  const fromSession = (() => { try { return sessionStorage.getItem('pp_token') || ''; } catch(e) { return ''; } })();
+  const fromLocal   = (() => { try { return localStorage.getItem('pp_token')   || ''; } catch(e) { return ''; } })();
+
+  const token = fromWindow || fromUrl || fromSession || fromLocal;
+
+  if (token) {
+    // Persist to both storages as backup for future navigations
+    try { sessionStorage.setItem('pp_token', token); } catch(e) {}
+    try { localStorage.setItem('pp_token', token);   } catch(e) {}
+    // Clean token from URL bar (security — don't leave it in browser history)
+    if (fromUrl) window.history.replaceState({}, '', window.location.origin + window.location.pathname);
   }
+
+  // Make token globally accessible
+  window.__PP_TOKEN__ = token;
 })();
 
 function getToken() {
-  // Try sessionStorage first, fall back to localStorage
-  // (some browsers block sessionStorage inside cross-origin iframes)
-  try {
-    const t = sessionStorage.getItem('pp_token');
-    if (t) return t;
-  } catch(e) {}
-  try {
-    const t = localStorage.getItem('pp_token');
-    if (t) return t;
-  } catch(e) {}
+  // window.__PP_TOKEN__ is always set by the IIFE above — fastest path
+  if (window.__PP_TOKEN__) return window.__PP_TOKEN__;
+  // Fallbacks in case of edge cases
+  try { const t = sessionStorage.getItem('pp_token'); if (t) return t; } catch(e) {}
+  try { const t = localStorage.getItem('pp_token');   if (t) return t; } catch(e) {}
   return '';
 }
 
