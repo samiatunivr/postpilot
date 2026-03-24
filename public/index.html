@@ -383,6 +383,18 @@
   <section class="sec" id="sec-credentials">
     <div class="ph"><div class="pt">API Keys</div><div class="ps">Add keys only for providers and platforms you actually use.</div></div>
 
+    <!-- Backup / Restore banner -->
+    <div style="background:var(--sf2);border:1px solid var(--bd2);border-radius:12px;padding:14px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-size:13px;font-weight:600;color:var(--text)">💾 Backup your keys</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">Export saves all keys + slots. Import restores after a redeploy.</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn bg sm" onclick="exportBackup()">⬇ Export Backup</button>
+        <label class="btn bo sm" style="cursor:pointer;margin:0">⬆ Import Backup<input type="file" accept=".json" onchange="importBackup(this)" style="display:none"/></label>
+      </div>
+    </div>
+
     <div class="card" style="border-color:#a78bfa25">
       <div class="sdiv">🤖 AI Providers</div>
       <div class="cb" style="border-color:#a78bfa30"><div class="ch2"><div class="ci" style="background:#a78bfa12;border:1px solid #a78bfa30">🟣</div><div class="cn">Claude (Anthropic)</div><div id="c-anthropic"></div></div><div class="f"><label class="lbl">API Key</label><input type="password" id="anthropicApiKey" placeholder="sk-ant-api03-…"/></div><div class="note">console.anthropic.com → API Keys</div></div>
@@ -851,6 +863,38 @@ async function previewAIImg(){
   document.getElementById('pimg').className='pimg';document.getElementById('pprompt').style.display='none';
   try{const r=await apiFetch(API+'/preview-image',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({instruction})}).then(r=>r.json());if(r.error)throw new Error(r.error);box.textContent='✓ Image generated';box.className='pbox';const img=document.getElementById('pimg');img.src=r.imageUrl;img.className='pimg show';const pp=document.getElementById('pprompt');pp.textContent=`Prompt: "${r.imagePrompt}"`;pp.style.display='block';}
   catch(e){box.textContent=`Error: ${e.message}`;box.className='pbox empty';toast(e.message,'error');}
+}
+
+// ── Backup / Restore ─────────────────────────────────────────────────────────
+async function exportBackup(){
+  try{
+    const res=await apiFetch(API+'/backup/export');
+    if(!res.ok)throw new Error('Export failed');
+    const blob=await res.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=`postpilot-backup-${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('Backup downloaded ✓ — store this file safely','success');
+  }catch(e){toast('Export failed: '+e.message,'error');}
+}
+
+async function importBackup(input){
+  const file=input.files[0];
+  if(!file)return;
+  if(!confirm(`Restore from "${file.name}"? This will overwrite your current keys and slots.`)){input.value='';return;}
+  try{
+    const text=await file.text();
+    const backup=JSON.parse(text);
+    const res=await apiFetch(API+'/backup/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(backup)});
+    const r=await res.json();
+    if(r.error)throw new Error(r.error);
+    toast(`✓ Restored ${r.keysRestored} keys and ${r.slotsRestored} slots`,'success');
+    loadCreds();refreshDash();
+  }catch(e){toast('Import failed: '+e.message,'error');}
+  input.value='';
 }
 
 // ── Credentials ───────────────────────────────────────────────────────────────
