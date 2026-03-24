@@ -66,9 +66,24 @@ app.get('/', (req, res) => {
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── File paths ────────────────────────────────────────────────────────────────
-const DATA_FILE  = path.join(__dirname, 'data.json');
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
+// ── Persistent data paths ────────────────────────────────────────────────────
+// DATA_FILE and UPLOAD_DIR read from env vars so they can point to a
+// Railway Volume (persistent) instead of the ephemeral container filesystem.
+//
+// In Railway Variables set:
+//   DATA_FILE  = /data/data.json
+//   UPLOAD_DIR = /data/uploads
+//
+// Then add a Railway Volume mounted at /data
+// Without this, data.json is wiped on every redeploy.
+const DATA_FILE  = process.env.DATA_FILE  || path.join(__dirname, 'data.json');
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
+
+// Ensure directories exist (important for Volume path which may be empty on first run)
+const uploadParent = path.dirname(DATA_FILE);
+if (!fs.existsSync(uploadParent)) fs.mkdirSync(uploadParent, { recursive: true });
+if (!fs.existsSync(UPLOAD_DIR))   fs.mkdirSync(UPLOAD_DIR,   { recursive: true });
+
 app.use('/uploads', express.static(UPLOAD_DIR));
 
 const storage = multer.diskStorage({
@@ -443,6 +458,36 @@ app.get('/api/status', (req, res) => {
   });
 });
 app.get('/api/logs',      (req, res) => res.json((data.logs || []).slice(-300).reverse()));
+
+// ── Backup / Restore ──────────────────────────────────────────────────────────
+// Export: downloads data.json with keys encrypted (safe to store)
+// Import: restores from a previously exported backup
+app.get('/api/backup/export', (req, res) => {
+  const toExport = {
+    ...data,
+    config: encryptConfig(data.config || {}), // always encrypted in export
+    _exportedAt: new Date().toISOString(),
+    _version: '1.0',
+  };
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="postpilot-backup-${new Date().toISOString().split('T')[0]}.json"`);
+  res.send(JSON.stringify(toExport, null, 2));
+});
+
+app.post('/api/backup/import', (req, res) => {
+  const backup = req.body;
+  if (!backup || !backup.config) return res.status(400).json({ error: 'Invalid backup file' });
+  // Restore — decrypt config on the way in so it lives plaintext in memory
+  const restoredConfig = decryptConfig(backup.config);
+  data.config    = restoredConfig;
+  data.slots     = backup.slots     || [];
+  data.instruction = backup.instruction || '';
+  data.subreddits  = backup.subreddits  || [];
+  // Don't restore logs or lastGenerated — keep those fresh
+  saveData();
+  addLog('success', 'system', `✓ Backup restored — ${Object.keys(restoredConfig).filter(k=>restoredConfig[k]).length} keys, ${data.slots.length} slots`);
+  res.json({ success: true, keysRestored: Object.keys(restoredConfig).filter(k=>restoredConfig[k]).length, slotsRestored: data.slots.length });
+});
 app.get('/api/providers', (req, res) => res.json(AI_PROVIDERS));
 app.get('/api/platforms', (req, res) => res.json(PLATFORMS));
 
