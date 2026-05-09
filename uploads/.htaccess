@@ -1,6 +1,0 @@
-# Block PHP execution under uploads/.
-<FilesMatch "\.(?i:php|phtml|php3|php4|php5|php7|phar|inc)$">
-    Require all denied
-</FilesMatch>
-Options -ExecCGI
-RemoveHandler .php .phtml .phar
