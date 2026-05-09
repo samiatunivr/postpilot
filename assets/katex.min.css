@@ -1,0 +1,5 @@
+/* KaTeX placeholder stylesheet — replace with official KaTeX 0.16.x katex.min.css. */
+.katex-stub{background:rgba(29,78,216,.08);border-radius:3px;padding:0 4px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.katex-stub.block{display:block;padding:6px 8px;margin:6px 0;border-left:3px solid #1d4ed8}
+.katex-stub.inline{display:inline}
+.katex-stub code{background:transparent;padding:0;font-size:.95em}

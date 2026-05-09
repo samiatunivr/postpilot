@@ -1,121 +1,125 @@
-# PostPilot — Eurobillr Integration Guide
-## Hostinger cPanel + Railway + Eurobillr PHP SaaS
+# ProctorDesk — Online Exam Platform
 
----
+Low-bandwidth proctored exam platform: PHP 8.3, vanilla JS, MySQL 8. Zero
+Composer / npm / CDN dependencies. Targets <50 KB per page (gzipped).
 
-## What you get when done
+## Stack & guarantees
+- PHP 8.3 with `declare(strict_types=1)` in every file
+- PDO + prepared statements only (no raw SQL interpolation anywhere)
+- Sessions: HttpOnly, Secure (auto-detected), SameSite=Strict, regenerated on login
+- Per-request CSP nonce, X-Frame-Options DENY, no inline scripts
+- gzip output via `ob_gzhandler`
+- Native anti-cheat — no third-party SDK
 
-PostPilot appears as a native sidebar page in Eurobillr at:
-`yourdomain.com/dashboard/scheduler.php`
+## Setup
 
-- Same navbar, same sidebar, same Bootstrap 5 design system (var(--primary), etc.)
-- Clicking "Social Scheduler" in the sidebar nav loads it like any other page
-- No second login — your existing $auth->isLoggedIn() check gates it
-- cPanel cron fires the scheduler every minute via the PHP trigger script
+1. **Create database**
+   ```sh
+   mysql -u root -p -e "CREATE DATABASE proctordesk DEFAULT CHARSET utf8mb4;"
+   mysql -u root -p -e "CREATE USER 'proctordesk'@'localhost' IDENTIFIED BY 'change-me';"
+   mysql -u root -p -e "GRANT ALL ON proctordesk.* TO 'proctordesk'@'localhost';"
+   mysql -u proctordesk -p proctordesk < schema.sql
+   ```
 
----
+2. **Edit `config.php`** — set `DB_HOST`, `DB_USER`, `DB_PASS`.
 
-## File placement on Hostinger
+3. **Set webroot to the project directory.** Apache/Nginx must point at this
+   folder. Ensure PHP can write to `uploads/exam-files/`.
 
+4. **Visit `https://yourhost/`** and sign in with the seed admin:
+   - Email: `admin@proctordesk.local`
+   - Password: `Admin@1234`
+   - Change this immediately via *Users → Reset password*.
+
+5. **(Optional) KaTeX self-host.** A working stub ships in `assets/katex.min.*`
+   so math text falls back to monospace. To enable real rendering, download the
+   official KaTeX 0.16.x release (MIT — https://github.com/KaTeX/KaTeX/releases)
+   and overwrite:
+   - `assets/katex.min.js`
+   - `assets/katex.min.css`
+   - `assets/fonts/*.woff2`
+
+## Default credentials
+| Role  | Email                       | Password   |
+|-------|-----------------------------|------------|
+| Admin | admin@proctordesk.local     | Admin@1234 |
+
+## Folder layout
 ```
-/public_html/
-├── dashboard/
-│   ├── scheduler.php          NEW — the PostPilot iframe page
-│   ├── scheduler_token.php    NEW — AJAX endpoint for token refresh
-│   ├── postpilot_auth.php     NEW — JWT generator (no composer needed)
-│   ├── invoices.php           (existing)
-│   ├── sidebar.php            (existing — add 4 lines)
-│   ├── header.php             (existing — no changes)
-│   └── footer.php             (existing — no changes)
-└── cron/
-    └── postpilot.php          NEW — cron trigger (keep outside public reach)
+/                    login + config + auth helpers
+/admin/              dashboard, users, exams, reports
+/instructor/         dashboard, exam-builder, results
+/student/            dashboard, take-exam, results
+/api/                heartbeat, submit-answer, submit-exam (JSON, CSRF, rate-limited)
+/assets/             app.css, app.js, katex.min.* (self-hosted)
+/uploads/exam-files/ user uploads (PHP execution blocked via .htaccess)
+/includes/           db.php, functions.php, mailer.php, anti_cheat.php
+schema.sql           full schema with FKs, indexes, seed admin
 ```
 
----
+## Roles
+- **Admin** — full CRUD on users, assigns students to exams, terminates live
+  attempts, sees full cheat timeline.
+- **Instructor** — creates and edits own exams, builds questions per subject,
+  views and grades results, releases scores.
+- **Student** — takes assigned exams in a proctored environment, sees own
+  released results.
 
-## Step 1 — Deploy PostPilot to Railway (free)
+## Anti-cheat (native)
+Client-side JS (`assets/app.js`):
+- Force fullscreen + re-enter on exit
+- Block right-click, copy/cut/paste, Ctrl+S/U/P, F12, Alt+Tab
+- Page Visibility tracking (tab_switch, window_blur)
+- DevTools heuristic via window outer/inner delta + console-timing
+- Disabled clipboard read; selection blocked in question area
+- Heartbeat every 30 s — 3 misses → auto-submit
+- Warning overlay before threshold; auto-terminate on N violations
 
-Push to GitHub, then connect to Railway:
-1. railway.app → New Project → Deploy from GitHub
-2. Go to Variables tab and add:
+Server-side (`includes/anti_cheat.php` + API):
+- Every event logged to `cheat_logs` (with IP and JSON extra)
+- Per-attempt event counter on `exam_attempts.cheat_flag_count`
+- Multi-session lock (rejects parallel attempts)
+- Server-time validation against attempt window
+- Question/attempt ownership check on every save
+- CSRF on every AJAX call (double-submit cookie + session)
+- 1 save per 2 s rate limit on answer submissions
+- Login throttling — 5 fails per 15 min per IP
 
-   PORT=3000
-   CRON_SECRET=generate-with: php -r "echo bin2hex(random_bytes(32));"
-   APP_KEY=same-value-as-POSTPILOT_SECRET-in-postpilot_auth.php
-   ALLOWED_ORIGINS=https://yourdomain.com
+## Subject-specific editors
+- **Math / Physics / Chemistry** — LaTeX toolbar (frac, sqrt, integral, sigma,
+  Greek letters, chemistry arrows), live KaTeX preview pane (debounced 300 ms),
+  collapsible periodic-table picker (118 elements), unit picker.
+- **Coding** — Tiny self-hosted regex highlighter (PHP / Python / JS / C / C++ /
+  Java / SQL / Bash); language picker; expected-output and starter-code fields;
+  optional paste-block per question via `data-no-paste`.
+- **English** — plain textarea with optional word limit and live counter.
+- **All types** — MCQ, True/False, Short answer, Fill-in-blank, Code, optional
+  ≤500 KB image (jpg/png/gif/svg validated server-side, renamed to UUID).
 
-3. Settings → Domains → Add Custom Domain → scheduler.yourdomain.com
-   Railway gives you a CNAME value to add in Hostinger DNS.
+## Auto-grading
+- MCQ, True/False, Fill — graded automatically on submit.
+- Short / Code — graded manually by the instructor in
+  `/instructor/results.php`.
+- Score = sum(marks_awarded) / sum(question marks) × 100.
 
-Test: https://scheduler.yourdomain.com/api/health → should return {"ok":true}
+## Performance notes
+- gzip via `ob_gzhandler` on every response.
+- All images `loading="lazy"`; system font stack only.
+- Single CSS / JS bundle, served with `Cache-Control: max-age=86400` (configure
+  at the web-server level — sample Apache directive below).
+- AJAX payloads JSON, well under 2 KB per call.
 
----
+Sample Apache cache headers (place in `.htaccess` at the project root):
+```
+<FilesMatch "\.(css|js|woff2)$">
+  Header set Cache-Control "public, max-age=86400"
+</FilesMatch>
+```
 
-## Step 2 — DNS in Hostinger hPanel
-
-Domains → DNS Zone → Add CNAME:
-  Name:   scheduler
-  Target: yourapp.up.railway.app
-  TTL:    3600
-
-Wait 5–30 min for propagation.
-
----
-
-## Step 3 — Upload files to Eurobillr dashboard
-
-Upload from the cron/ folder:
-  cron/scheduler.php       → /public_html/dashboard/scheduler.php
-  cron/scheduler_token.php → /public_html/dashboard/scheduler_token.php
-  cron/postpilot_auth.php  → /public_html/dashboard/postpilot_auth.php
-
-Edit postpilot_auth.php — set your two constants:
-  define('POSTPILOT_SECRET', 'your-32-char-secret');
-  define('POSTPILOT_URL',    'https://scheduler.yourdomain.com');
-
-POSTPILOT_SECRET must match APP_KEY set in Railway variables.
-
----
-
-## Step 4 — Add to sidebar.php (4 lines total)
-
-Near the top where you detect the current page, add:
-  $is_scheduler = ($current_page === 'scheduler.php');
-
-Inside your <ul class="nav flex-column">, add the nav item:
-  <li class="nav-item">
-    <a class="nav-link <?php echo $is_scheduler ? 'active' : ''; ?>"
-       href="<?php echo dashboard_url('scheduler'); ?>">
-      <span class="nav-icon"><i class="fas fa-rocket"></i></span>
-      <span class="nav-text">Social Scheduler</span>
-      <span class="badge ms-auto" style="background:var(--primary-light);color:var(--primary);font-size:.65rem;font-weight:600;border-radius:4px;padding:2px 6px;">AI</span>
-    </a>
-  </li>
-
-In url_helper.php, add to the $pages array:
-  'scheduler' => 'scheduler.php',
-
----
-
-## Step 5 — Set up cPanel cron in Hostinger hPanel
-
-Upload cron/postpilot.php to /public_html/cron/postpilot.php
-Edit the two constants at the top of that file.
-
-hPanel → Advanced → Cron Jobs → Add:
-  Command:   php /home/YOURUSERNAME/public_html/cron/postpilot.php
-  Schedule:  * * * * *  (every minute)
-
-Protect it — create /public_html/cron/.htaccess:
-  Order Deny,Allow
-  Deny from all
-
-Check the log at /public_html/cron/postpilot_cron.log — new line every minute.
-
----
-
-## Timezone note
-
-All PostPilot slot times are UTC.
-Brussels UTC+2 (summer): subtract 2 hours — 09:00 local = 07:00 UTC in PostPilot.
-Brussels UTC+1 (winter): subtract 1 hour  — 09:00 local = 08:00 UTC in PostPilot.
+## Notes / extension points
+- Multi-face / webcam proctoring: schema includes a `multi_face` event type;
+  wire a getUserMedia frame-checker in `app.js` and POST events to
+  `/api/heartbeat.php`. *Can be extended.*
+- Email notifications: `includes/mailer.php` provides `send_mail()`. Hook it
+  into account creation or exam assignment if desired.
+- APCu cache: exam metadata reads can be cached when the extension is loaded.
