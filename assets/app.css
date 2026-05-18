@@ -3,9 +3,12 @@
   --bg:#f6f7fb; --card:#fff; --fg:#111827; --muted:#6b7280;
   --primary:#1d4ed8; --success:#15803d; --danger:#b91c1c;
   --border:#e5e7eb; --radius:6px; --shadow:0 1px 2px rgba(0,0,0,.04);
+  --input-bg:#fff;
 }
-@media (prefers-color-scheme:dark){
-  :root{--bg:#0b1220;--card:#111827;--fg:#e5e7eb;--muted:#9ca3af;--border:#1f2937;}
+/* Opt-in dark mode only — no longer auto-follows OS prefs. */
+html[data-theme="dark"]{
+  --bg:#0b1220;--card:#111827;--fg:#e5e7eb;--muted:#9ca3af;--border:#1f2937;
+  --input-bg:#0b1220;
 }
 *,*::before,*::after{box-sizing:border-box}
 html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);
@@ -38,7 +41,7 @@ img{max-width:100%}
 .alert.danger{background:rgba(185,28,28,.1);color:var(--danger)}
 label{display:block;margin:8px 0;font-weight:500}
 label input,label select,label textarea,input[type=text],input[type=email],input[type=password],input[type=number],input[type=datetime-local],select,textarea{
-  width:100%;padding:8px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--fg);font:inherit
+  width:100%;padding:8px;border:1px solid var(--border);border-radius:var(--radius);background:var(--input-bg);color:var(--fg);font:inherit
 }
 textarea{font-family:inherit;resize:vertical}
 .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
